@@ -21,9 +21,16 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ErrorCollector;
 import org.junit.rules.ExpectedException;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.Mockito;
+import org.mockito.MockitoAnnotations;
 
 import br.ce.wcaquino.builders.FilmeBuilder;
+import br.ce.wcaquino.builders.LocacaoBuilder;
 import br.ce.wcaquino.builders.UsuarioBuilder;
+import br.ce.wcaquino.daos.LocacaoDAO;
 import br.ce.wcaquino.entidades.Filme;
 import br.ce.wcaquino.entidades.Locacao;
 import br.ce.wcaquino.entidades.Usuario;
@@ -33,7 +40,15 @@ import br.ce.wcaquino.utils.DataUtils;
 
 public class LocacaoServiceTest {
 
+	@InjectMocks
 	private LocacaoService service;
+
+	@Mock
+	private LocacaoDAO dao;
+	@Mock
+	private SPCService spcService;
+	@Mock
+	private EmailService emailService;
 
 	@Rule
 	public ErrorCollector error = new ErrorCollector();
@@ -43,7 +58,15 @@ public class LocacaoServiceTest {
 
 	@Before
 	public void setup() {
-		service = new LocacaoService();
+		MockitoAnnotations.initMocks(this); // com essa chamada e com as anotações @Mock + @InjectMocks não preciso usar
+											// mais dos comandos abaixo
+//		service = new LocacaoService();
+//		dao = Mockito.mock(LocacaoDAO.class);
+//		service.setLocacaoDAO(dao);
+//		spcService = Mockito.mock(SPCService.class);
+//		service.setSPCService(spcService);
+//		emailService = Mockito.mock(EmailService.class);
+//		service.setEmailService(emailService);
 	}
 
 	@Test
@@ -117,6 +140,84 @@ public class LocacaoServiceTest {
 
 		// Verificacao
 		assertThat(retorno.getDataRetorno(), caiNumaSegunda());
+	}
+
+	@Test
+	public void naoDeveAlugarFilmeParaNegativadoSPC() throws Exception {
+		// cenário
+		Usuario usuario = UsuarioBuilder.umUsuario().agora();
+		List<Filme> filmes = Arrays.asList(FilmeBuilder.umFilme().agora());
+
+		Mockito.when(spcService.possuiNegativacao(usuario)).thenReturn(true);
+
+		// ação
+		try {
+			service.alugarFilme(usuario, filmes);
+			// verificação
+			Assert.fail();
+		} catch (LocadoraException e) {
+			Assert.assertThat(e.getMessage(), is("Usuário Negativado!"));
+		}
+
+		Mockito.verify(spcService).possuiNegativacao(usuario);
+
+	}
+
+	@Test
+	public void deveEnviarEmailParaLocacoesAtrasadas() {
+		// cenário
+		Usuario usuario = UsuarioBuilder.umUsuario().agora();
+		Usuario usuario2 = UsuarioBuilder.umUsuario().comNome("Usuario em Dia").agora();
+		Usuario usuario3 = UsuarioBuilder.umUsuario().comNome("Outro com atraso").agora();
+		List<Locacao> locacoes = Arrays.asList(LocacaoBuilder.umLocacao().atrasado().comUsuario(usuario).agora(),
+				LocacaoBuilder.umLocacao().comUsuario(usuario2).agora(),
+				LocacaoBuilder.umLocacao().atrasado().comUsuario(usuario3).agora());
+
+		Mockito.when(dao.obterLocacaoPendentes()).thenReturn(locacoes);
+
+		// ação
+		service.notificarAtrassos();
+
+		// verificação
+		Mockito.verify(emailService).notificarAtraso(usuario);
+		Mockito.verify(emailService, Mockito.never()).notificarAtraso(usuario2);
+		Mockito.verify(emailService).notificarAtraso(usuario3);
+	}
+
+	@Test
+	public void deveTratarErroNoSPC() throws Exception {
+		// cenário
+		Usuario usuario = UsuarioBuilder.umUsuario().agora();
+		List<Filme> filmes = Arrays.asList(FilmeBuilder.umFilme().agora());
+
+		Mockito.when(spcService.possuiNegativacao(usuario)).thenThrow(new Exception("Falha catratrófica"));
+
+		// verificação
+		exception.expect(LocadoraException.class);
+		exception.expectMessage("Problema com SPC, tente novamente");
+
+		// ação
+		service.alugarFilme(usuario, filmes);
+
+	}
+
+	@Test
+	public void deveProrrogarUmaLocacao() {
+		// cenário
+		Locacao locacao = LocacaoBuilder.umLocacao().agora();
+
+		// ação
+		service.prorrogarLocacao(locacao, 3);
+
+		// verificação
+		ArgumentCaptor<Locacao> argCapt = ArgumentCaptor.forClass(Locacao.class);
+		Mockito.verify(dao).salvar(argCapt.capture());
+		Locacao locacaoRetornada = argCapt.getValue();
+		
+		error.checkThat(locacaoRetornada.getValor(), is(12.0));
+		error.checkThat(locacaoRetornada.getDataLocacao(), ehHoje());
+		error.checkThat(locacaoRetornada.getDataRetorno(), ehHojeComDiferencaDias(3));
+
 	}
 
 }
